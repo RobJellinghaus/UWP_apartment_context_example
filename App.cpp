@@ -4,6 +4,7 @@
 #include "pch.h"
 
 #include <future>
+#include <sstream>
 
 using namespace std::chrono;
 using namespace winrt;
@@ -19,20 +20,10 @@ using namespace Windows::System;
 
 const int TicksPerSecond = 10000000;
 
-TimeSpan timeSpanFromSeconds(int seconds)
+TimeSpan timeSpanFromSeconds(double seconds)
 {
 	// TimeSpan is in 100ns units
-	return TimeSpan(seconds * TicksPerSecond);
-}
-
-// Wait until the graph state becomes the expected state, or timeoutTime is reached.
-IAsyncAction WaitFor(DateTime timeoutTime)
-{
-	while (winrt::clock::now() < timeoutTime)
-	{
-		// wait in intervals of 1/100 sec
-		co_await resume_after(TimeSpan((int)(TicksPerSecond * 0.01f)));
-	}
+	return TimeSpan((int)(seconds * TicksPerSecond));
 }
 
 struct App : ApplicationT<App>
@@ -43,32 +34,61 @@ struct App : ApplicationT<App>
     // for use inside the Click lambda?
     apartment_context _ui_thread;
 
+    int _currentTick{ 0 };
+
+    TextBlock _textBlock{ nullptr };
+    Button _button1{ nullptr };
+
+    void UpdateTextBlock(const std::wstring& suffix)
+    {
+        std::wstring str(AppStateString);
+        str.append(suffix);
+        _textBlock.Text(str);
+    }
+
+    // Tick forever, updating the text block at each two-second tick.
     IAsyncAction TickForever()
     {
-        // first, require that we are in the background
-        co_await resume_background();
+        for (;;)
+        {
+            // first, require that we are in the background while we wait
+            co_await resume_background();
 
+            // wait two seconds
+            co_await resume_after(timeSpanFromSeconds(0.01));
 
+            // switch to UI thread in order to update _textBlock.
+            // This line crashes (x64 debug, latest insider build 17093). 
+            // MAIN QUESTION: Why is the value of _ui_thread apparently corrupt here?
+            co_await _ui_thread;
+
+            std::wstringstream wstr{};
+            wstr << L"Tick #" << (_currentTick++);
+            UpdateTextBlock(wstr.str());
+        }
     }
 
 	void OnLaunched(LaunchActivatedEventArgs const&)
     {
-		m_textBlock = TextBlock();
-		m_textBlock.Text(AppStateString);
+		_textBlock = TextBlock();
+		_textBlock.Text(AppStateString);
 
-		m_button1 = Button();
-		m_button1.Content(IReference<hstring>(L"Start Ticking"));
+		_button1 = Button();
+		_button1.Content(IReference<hstring>(L"Start Ticking"));
 
-		m_button1.Click([&](IInspectable const& sender, RoutedEventArgs const&)
+		_button1.Click([&](IInspectable const&, RoutedEventArgs const&)
 		{
-		    
+            // start ticking forever
+            // QUESTION: Is this a valid way to enter an infinite asynchronous loop?  Does this need to be co_awaited?
+            // Would it cause any type of context/thread starvation if it were awaited and effectively looped forever?
+            TickForever();
 		});
 
 		Window xamlWindow = Window::Current();
 
 		StackPanel stackPanel = StackPanel();
-		stackPanel.Children().Append(m_textBlock);
-		stackPanel.Children().Append(m_button1);
+		stackPanel.Children().Append(_textBlock);
+		stackPanel.Children().Append(_button1);
 
 		xamlWindow.Content(stackPanel);
 		xamlWindow.Activate();
@@ -79,35 +99,29 @@ struct App : ApplicationT<App>
 
     fire_and_forget Async()
     {
+        // We are being called on the UI thread, so capture its context.
         apartment_context ui_thread;
 
+        // attempt to save the apartment_context in an instance variable.
+        // QUESTION: Is this a valid operation? This certainly compiles without complaint... should it be expected to work?
+        _ui_thread = ui_thread;
+
+        // Switch away from UI thread and wait two seconds.
         co_await resume_background();
-        // wait only one second (and hopefully much less) for graph to become initialized.
-        // 1000 second timeout is for early stage debugging.
-        co_await WaitFor(winrt::clock::now() + timeSpanFromSeconds(2));
+        co_await resume_after(timeSpanFromSeconds(2));
 
-        {
-            co_await ui_thread;
-            std::wstring str(AppStateString);
-            str.append(L"Initializing");
-            m_textBlock.Text(str);
-        }
+        // Switch back and update text.
+        co_await ui_thread;
+        UpdateTextBlock(L"Initializing");
 
-        co_await WaitFor(winrt::clock::now() + timeSpanFromSeconds(2));
-
-        {
-            co_await ui_thread;
-            std::wstring str(AppStateString);
-            str.append(L"Running");
-            m_textBlock.Text(str);
-        }
-
+        // Switch away from UI thread and wait two seconds again.
         co_await resume_background();
+        co_await resume_after(timeSpanFromSeconds(2));
+
+        // Switch back and update text again.
+        co_await ui_thread;
+        UpdateTextBlock(L"Waiting");
 	}
-
-	TextBlock m_textBlock{ nullptr };
-	Button m_button1{ nullptr };
-	// Button m_button2{ nullptr };
 };
 
 int __stdcall wWinMain(HINSTANCE, HINSTANCE, PWSTR, int)
