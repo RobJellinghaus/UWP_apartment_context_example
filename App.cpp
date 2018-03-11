@@ -47,6 +47,10 @@ struct App : ApplicationT<App>
     }
 
     // Tick forever, updating the text block at each two-second tick.
+    // Clicking the button multiple times will create multiple concurrent instances of this loop.
+    // But because of the context switching, these are effectively mutually excluded from updating
+    // the text block racefully, and these concurrent loops coexist just fine!  Each loop causes the
+    // block to be updated an additional 100x per second.
     IAsyncAction TickForever()
     {
         for (;;)
@@ -58,9 +62,7 @@ struct App : ApplicationT<App>
             co_await resume_after(timeSpanFromSeconds(0.01));
 
             // switch to UI thread in order to update _textBlock.
-            // This line crashes (x64 debug, latest insider build 17093). 
-            // MAIN QUESTION: Why is the value of _ui_thread apparently corrupt here?
-            co_await _ui_thread;
+           co_await _ui_thread;
 
             std::wstringstream wstr{};
             wstr << L"Tick #" << (_currentTick++);
